@@ -13,6 +13,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Unzip source
+        run: |
+          unzip -o CalculatorApp.zip -d extracted
+          # CalculatorApp.zip contains a top-level "CalculatorApp" folder; move its
+          # contents up so the Gradle project sits at $GITHUB_WORKSPACE/project.
+          mv extracted/CalculatorApp project
+
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
@@ -31,11 +38,12 @@ jobs:
           gradle-version: 8.7
 
       - name: Build debug APK
+        working-directory: project
         run: gradle assembleDebug --stacktrace
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: calculator-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: project/app/build/outputs/apk/debug/*.apk
           if-no-files-found: error
