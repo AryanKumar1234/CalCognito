@@ -13,5 +13,6 @@ A calculator app for Android, written in Kotlin. It has a basic and scientific m
 ## How the vault works
 
 1. Type a PIN of at least 4 digits, then hold `=` for 4 seconds to set it.
-2. To open the vault, type the PIN and hold `=` for 4 seconds.
-3. A wrong PIN does nothing.
+2. To enter the vault type the PIN and tap on `=`.
+3. To change the pin, type the existing PIN and hold `=` for 4 seconds, now enter a new PIN tape on `=`.
+4. A wrong PIN does nothing.
