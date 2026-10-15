@@ -1,50 +1,63 @@
-name: Build Android APK
+name: Build and Release Android APK
 
 on:
   push:
-    branches: [ "*" ]
+    branches: [ main, master ]
   pull_request:
-    branches: [ "*" ]
   workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create a GitHub Release
 
 jobs:
   build:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Unzip source
+        run: |
+          unzip -o CalculatorApp.zip -d extracted
+          mv extracted/CalculatorApp project
 
       - name: Set up JDK 17
         uses: actions/setup-java@v4
         with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+          distribution: temurin
+          java-version: 17
 
       - name: Install required Android SDK packages
         run: |
-          sdkmanager --install "platform-tools" "platforms;android-34" "build-tools;34.0.0"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v3
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: 8.7
 
       - name: Build debug APK
-        run: |
-          if [ -z "$(find . -name 'settings.gradle*')" ]; then
-            for z in $(find . -maxdepth 2 -name "*.zip"); do
-              unzip -o "$z" -d .
-            done
-          fi
-          PROJECT_DIR=$(dirname "$(find . -name 'settings.gradle*' | head -n 1)")
-          echo "Building Gradle project in: $PROJECT_DIR"
-          cd "$PROJECT_DIR"
-          gradle assembleDebug --stacktrace
+        working-directory: project
+        run: gradle assembleDebug --stacktrace
 
-      - name: Upload Debug APK
+      - name: Rename APK
+        run: cp project/app/build/outputs/apk/debug/app-debug.apk Calculator.apk
+
+      - name: Upload APK as workflow artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Calculator-Debug-APK
-          path: "**/build/outputs/apk/debug/*.apk"
+          name: calculator-debug-apk
+          path: Calculator.apk
+          if-no-files-found: error
+
+      - name: Publish GitHub Release
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "v1.0.${{ github.run_number }}" Calculator.apk \
+            --target "${{ github.sha }}" \
+            --title "Calculator v1.0.${{ github.run_number }}" \
+            --notes "Debug APK built automatically from commit ${{ github.sha }}."
