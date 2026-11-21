@@ -1,95 +1,80 @@
-name: Build and publish APK (with hidden-app engine)
-
-# Put this at  .github/workflows/<same file name as your current workflow>.yml  in the REPO ROOT.
-# (GitHub only runs workflows from the repo root's .github/workflows; the copy inside CalculatorApp.zip never runs.)
-# Keeping the same file name keeps the run number going, so the release tags (v1.0.N) don't collide with old ones.
+name: Build APK (with hidden-app engine)
 
 on:
   push:
+  pull_request:
   workflow_dispatch:
     inputs:
       rebuild_engine:
-        description: "Ignore the cached engine and rebuild it from source"
+        description: "Ignore the cached engine AAR and rebuild it from source"
         type: boolean
         default: false
+      engine_repo:
+        description: "Engine git URL to try instead of the pinned one, e.g. https://github.com/FBlackBox/BlackBox.git — leave blank to use the pinned engine"
+        type: string
+        default: ""
       engine_ref:
-        description: "Engine commit / tag / branch to build (empty = latest)"
+        description: "Engine commit / tag / branch to build (empty = that repo's default branch). Pin one once you have a build that works."
+        type: string
+        default: ""
+      engine_module:
+        description: "Engine's core module folder, only if it isn't Bcore/BCore (some forks name it differently)"
         type: string
         default: ""
 
-permissions:
-  contents: write   # needed to create the release
-
 env:
+  # Bump this to force a fresh engine build; the AAR is cached between runs because the native build is slow.
   ENGINE_CACHE_VERSION: v4
+  # Read by scripts/build_engine.sh. Blank engine_repo/engine_module means "use its own defaults"
+  # (ALEX5402/NewBlackbox, module Bcore).
+  ENGINE_REPO: ${{ inputs.engine_repo }}
   ENGINE_REF: ${{ inputs.engine_ref }}
+  ENGINE_MODULE: ${{ inputs.engine_module }}
+  # true only on a manual run asking for a non-pinned engine or module. Keeps that run's output out of
+  # the artifact names your real builds use, and out of the cache slot your pinned build reads from —
+  # a trial run can never overwrite either.
+  TRYING_OTHER_ENGINE: ${{ inputs.engine_repo != '' || inputs.engine_module != '' }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      # Finds the project: unzips the newest .zip in the repo root (the one you uploaded last), or uses a project that
-      # is already unpacked. Sets PROJECT_DIR to the folder that holds settings.gradle.kts.
-      - name: Unzip source
-        run: |
-          set -e
-          best=""; best_t=0
-          for z in *.zip; do
-            [ -f "$z" ] || continue
-            t="$(git log -1 --format=%ct -- "$z" 2>/dev/null || echo 0)"
-            if [ "${t:-0}" -ge "$best_t" ]; then best="$z"; best_t="${t:-0}"; fi
-          done
-          if [ -n "$best" ]; then
-            echo "Unzipping $best"
-            rm -rf _src && mkdir _src
-            unzip -q -o "$best" -d _src
-            root="_src"
-          else
-            root="."
-          fi
-          settings="$(find "$root" -maxdepth 4 -name settings.gradle.kts -not -path '*/.git/*' | awk '{print length, $0}' | sort -n | head -n 1 | cut -d' ' -f2-)"
-          if [ -z "$settings" ]; then echo "No settings.gradle.kts found"; exit 1; fi
-          dir="$(cd "$(dirname "$settings")" && pwd)"
-          echo "Project folder: $dir"
-          echo "PROJECT_DIR=$dir" >> "$GITHUB_ENV"
-          test -f "$dir/scripts/build_engine.sh" || { echo "scripts/build_engine.sh is missing from the project"; exit 1; }
-
-      # JDK 21: the engine is written for Java 21 (17 fails with "invalid source release: 21"). The app still targets 17.
+      # JDK 21: the engine's code is written for Java 21 (JDK 17 fails with "invalid source release: 21").
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
 
+      # The runner already has the Android SDK. Accepting the licences lets Gradle download whatever else the
+      # engine and the app ask for (NDK, CMake, platforms).
       - name: Install required Android SDK packages
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Restore engine cache
+      - name: Restore engine AAR cache
         id: engine-cache
         if: ${{ !inputs.rebuild_engine }}
         uses: actions/cache@v4
         with:
           path: |
-            ${{ env.PROJECT_DIR }}/app/libs/blackbox-core.aar
-            ${{ env.PROJECT_DIR }}/app/libs/engine-dep-*
-          key: engine-aar-${{ env.ENGINE_CACHE_VERSION }}-${{ inputs.engine_ref || 'latest' }}-${{ hashFiles('**/scripts/build_engine.sh', '**/scripts/export-engine-deps.init.gradle') }}
+            app/libs/blackbox-core.aar
+            app/libs/engine-dep-*
+          # engine_repo and engine_module are folded into the key so a trial run gets its own cache
+          # slot and never reads from or saves over the one your pinned build uses.
+          key: engine-aar-${{ env.ENGINE_CACHE_VERSION }}-${{ inputs.engine_repo || 'default' }}-${{ inputs.engine_module || 'default' }}-${{ inputs.engine_ref || 'latest' }}-${{ hashFiles('scripts/*') }}
 
-      - name: Build the BlackBox engine AAR
+      - name: Build the engine AAR
         if: ${{ steps.engine-cache.outputs.cache-hit != 'true' }}
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           chmod +x scripts/build_engine.sh
           ./scripts/build_engine.sh
 
       - name: Check the engine AAR is in place
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           ls -l app/libs
           test -s app/libs/blackbox-core.aar
@@ -97,53 +82,89 @@ jobs:
             { echo '### Engine build'; echo '```'; cat app/libs/engine-dep-info.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
           fi
 
-      # Save the engine even if the app build below fails, so it never has to be rebuilt from scratch.
-      - name: Save engine cache
-        if: ${{ always() && steps.engine-cache.outputs.cache-hit != 'true' && hashFiles(format('{0}/app/libs/blackbox-core.aar', env.PROJECT_DIR)) != '' }}
+      # The crash names ONE missing method. nm (inside build_engine.sh) only finds methods exported the
+      # Java_pkg_Class_method way; an engine that registers natives with RegisterNatives keeps its method
+      # names as plain strings instead, invisible to nm. This pulls every string out of each .so that looks
+      # like a JNI class path or method signature, so you can check whether the crash's method (or its
+      # class) shows up here at all for this engine build.
+      - name: List Java symbols referenced from the native libraries
+        run: |
+          mkdir -p /tmp/engine-so
+          for aar in app/libs/*.aar; do
+            [ -f "$aar" ] || continue
+            unzip -o -q "$aar" 'jni/*/*.so' -d /tmp/engine-so 2>/dev/null || true
+          done
+          {
+            echo '### Java symbols referenced from the native libraries (heuristic)'
+            echo 'Plain strings inside each .so that look like a JNI class path or method signature.'
+            find /tmp/engine-so -name '*.so' 2>/dev/null | sort | while read -r so; do
+              echo
+              echo "-- ${so#/tmp/engine-so/} --"
+              echo '```'
+              strings -a "$so" \
+                | grep -E '^\(.*\)[A-Za-z]|^[A-Za-z][A-Za-z0-9_]*(/[A-Za-z][A-Za-z0-9_]*)+$' \
+                | sort -u | head -n 300
+              echo '```'
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Save the AAR even if the app build below fails, so it never has to be rebuilt from scratch.
+      - name: Save engine AAR cache
+        if: ${{ always() && steps.engine-cache.outputs.cache-hit != 'true' && hashFiles('app/libs/blackbox-core.aar') != '' }}
         uses: actions/cache/save@v4
         with:
           path: |
-            ${{ env.PROJECT_DIR }}/app/libs/blackbox-core.aar
-            ${{ env.PROJECT_DIR }}/app/libs/engine-dep-*
-          key: engine-aar-${{ env.ENGINE_CACHE_VERSION }}-${{ inputs.engine_ref || 'latest' }}-${{ hashFiles('**/scripts/build_engine.sh', '**/scripts/export-engine-deps.init.gradle') }}
+            app/libs/blackbox-core.aar
+            app/libs/engine-dep-*
+          key: engine-aar-${{ env.ENGINE_CACHE_VERSION }}-${{ inputs.engine_repo || 'default' }}-${{ inputs.engine_module || 'default' }}-${{ inputs.engine_ref || 'latest' }}-${{ hashFiles('scripts/*') }}
 
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.13"
 
-      # Release build: not debuggable, so Android does not run it with CheckJNI. Signed with the committed key.
-      - name: Build release APK
-        working-directory: ${{ env.PROJECT_DIR }}
-        run: gradle assembleRelease --stacktrace
+      - name: Build debug APK
+        run: gradle assembleDebug --stacktrace
 
       - name: Check the engine is inside the APK
-        working-directory: ${{ env.PROJECT_DIR }}
         run: |
-          apk="$(ls app/build/outputs/apk/release/*.apk | head -n 1)"
-          echo "APK: $apk"
-          unzip -p "$apk" 'classes*.dex' | grep -aq 'top/niunaijun/blackbox/BlackBoxCore' \
-            || { echo "The engine classes are NOT in the APK"; exit 1; }
-          unzip -p "$apk" 'classes*.dex' | grep -aq 'top/niunaijun/blackreflection/BlackReflection' \
-            || { echo "BlackReflection is NOT in the APK"; exit 1; }
-          echo "Engine included: yes" | tee -a "$GITHUB_STEP_SUMMARY"
-          cp "$apk" "$GITHUB_WORKSPACE/Calculator.apk"
+          apk="$(ls app/build/outputs/apk/debug/*.apk | head -n 1)"
+          if unzip -p "$apk" 'classes*.dex' | grep -aq 'top/niunaijun/blackbox/BlackBoxCore'; then
+            echo "Engine included: yes" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The engine classes are NOT in the APK" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if unzip -p "$apk" 'classes*.dex' | grep -aq 'top/niunaijun/blackreflection/BlackReflection'; then
+            echo "Engine libraries (BlackReflection) included: yes" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "BlackReflection is NOT in the APK: the engine would fail to start" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
 
+      # Trial runs (engine_repo and/or engine_module set) upload under a different artifact name so they
+      # can never be mistaken for, or overwrite, your normal debug build.
       - uses: actions/upload-artifact@v4
         with:
-          name: Calculator-apk
-          path: Calculator.apk
+          name: ${{ env.TRYING_OTHER_ENGINE == 'true' && 'Calculator-apk' || 'Calculator-debug-apk' }}
+          path: app/build/outputs/apk/debug/*.apk
 
-      - name: Publish GitHub Release
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -e
-          tag="v1.0.${{ github.run_number }}"
-          if gh release view "$tag" >/dev/null 2>&1; then tag="${tag}-${{ github.run_attempt }}"; fi
-          short="${GITHUB_SHA::7}"
-          gh release create "$tag" Calculator.apk \
-            --target "$GITHUB_SHA" \
-            --title "Calculator $tag" \
-            --notes "Release APK (hidden-app engine included, not debuggable) built automatically from commit $short." \
-            --latest
-            
+      # Same app, not debuggable. A debuggable app runs with CheckJNI, which aborts the whole process on JNI
+      # problems a normal build survives, so use this one on a phone. Skipped on a trial run — the debug APK
+      # above is enough to see whether a different engine starts at all, and skipping saves CI time.
+      - name: Build release APK
+        if: ${{ env.TRYING_OTHER_ENGINE != 'true' }}
+        run: gradle assembleRelease --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        if: ${{ env.TRYING_OTHER_ENGINE != 'true' }}
+        with:
+          name: Calculator-release-apk
+          path: app/build/outputs/apk/release/*.apk
+
+      # Download this once and commit it to app/libs/ if you also want to build the engine build locally in
+      # Android Studio without running the native build yourself.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.TRYING_OTHER_ENGINE == 'true' && 'blackbox-core-aar-trial' || 'blackbox-core-aar' }}
+          path: app/libs/blackbox-core.aar
+          
