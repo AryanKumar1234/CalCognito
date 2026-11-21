@@ -1,4 +1,4 @@
-name: Build APK (with hidden-app engine)
+name: Build CalcVault (Play-Compliant APK & AAB)
 
 permissions:
   contents: write   # needed to create git tags / GitHub releases below
@@ -7,51 +7,23 @@ on:
   push:
   pull_request:
   workflow_dispatch:
-    inputs:
-      rebuild_engine:
-        description: "Ignore the cached engine AAR and rebuild it from source"
-        type: boolean
-        default: false
-      engine_repo:
-        description: "Engine git URL to try instead of the pinned one, e.g. https://github.com/FBlackBox/BlackBox.git — leave blank to use the pinned engine"
-        type: string
-        default: ""
-      engine_ref:
-        description: "Engine commit / tag / branch to build (empty = that repo's default branch). Pin one once you have a build that works."
-        type: string
-        default: ""
-      engine_module:
-        description: "Engine's core module folder, only if it isn't Bcore/BCore (some forks name it differently)"
-        type: string
-        default: ""
-
-env:
-  # Bump this to force a fresh engine build; the AAR is cached between runs because the native build is slow.
-  ENGINE_CACHE_VERSION: v4
-  # Read by scripts/build_engine.sh. Blank engine_repo/engine_module means "use its own defaults"
-  # (ALEX5402/NewBlackbox, module Bcore).
-  ENGINE_REPO: ${{ inputs.engine_repo }}
-  ENGINE_REF: ${{ inputs.engine_ref }}
-  ENGINE_MODULE: ${{ inputs.engine_module }}
-  # true only on a manual run asking for a non-pinned engine or module. Keeps that run's output out of
-  # the artifact names your real builds use, out of the cache slot your pinned build reads from, and out
-  # of the auto-release below — a trial run can never overwrite any of the three.
-  TRYING_OTHER_ENGINE: ${{ inputs.engine_repo != '' || inputs.engine_module != '' }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
-      # The repo currently holds the project as a committed zip instead of unpacked files. If one is
-      # found at the repo root, unpack it over the checkout (flattening a single wrapping folder, e.g.
-      # "CalculatorApp/...", so the rest of this workflow keeps using plain paths like scripts/..., app/...).
-      # Once you commit the real files instead of a zip, this step just says so and does nothing.
+      # If the repo holds the project as a committed zip at the root, unpack it over the checkout
+      # (flattening a single wrapping folder like "CalcVault/..."). Prefers CalcVault*.zip if more
+      # than one zip exists; once you commit unpacked files instead, this step is a no-op.
       - name: Extract committed project zip, if there is one
         run: |
-          zip_file="$(find . -maxdepth 1 -iname '*.zip' | head -n 1)"
+          zip_file="$(find . -maxdepth 1 -iname '*CalcVault*.zip' | head -n 1)"
+          if [ -z "$zip_file" ]; then
+            zip_file="$(find . -maxdepth 1 -iname '*.zip' | head -n 1)"
+          fi
           if [ -z "$zip_file" ]; then
             echo "No zip at the repo root; using the checked-out files as-is."
             exit 0
@@ -61,130 +33,46 @@ jobs:
           unzip -q "$zip_file" -d "$tmp"
           entries=("$tmp"/*)
           if [ "${#entries[@]}" -eq 1 ] && [ -d "${entries[0]}" ]; then
-            src="${entries[0]}"   # the zip wraps everything in one folder; use its contents
+            src="${entries[0]}"
           else
             src="$tmp"
           fi
-          # Never let the zip's own copy of these overwrite the pipeline that is currently running, or
-          # git's own metadata.
           rsync -a --exclude='.git' --exclude='.github' "$src"/ ./
           rm -rf "$tmp"
           echo "Repo root after extraction:"
           ls -la
 
-      # JDK 21: the engine's code is written for Java 21 (JDK 17 fails with "invalid source release: 21").
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 21
+          java-version: 17
 
-      # The runner already has the Android SDK. Accepting the licences lets Gradle download whatever else the
-      # engine and the app ask for (NDK, CMake, platforms).
       - name: Install required Android SDK packages
         run: |
           yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Restore engine AAR cache
-        id: engine-cache
-        if: ${{ !inputs.rebuild_engine }}
-        uses: actions/cache@v4
-        with:
-          path: |
-            app/libs/blackbox-core.aar
-            app/libs/engine-dep-*
-          # engine_repo and engine_module are folded into the key so a trial run gets its own cache
-          # slot and never reads from or saves over the one your pinned build uses.
-          key: engine-aar-${{ env.ENGINE_CACHE_VERSION }}-${{ inputs.engine_repo || 'default' }}-${{ inputs.engine_module || 'default' }}-${{ inputs.engine_ref || 'latest' }}-${{ hashFiles('scripts/*') }}
-
-      - name: Build the engine AAR
-        if: ${{ steps.engine-cache.outputs.cache-hit != 'true' }}
-        run: |
-          chmod +x scripts/build_engine.sh
-          ./scripts/build_engine.sh
-
-      - name: Check the engine AAR is in place
-        run: |
-          ls -l app/libs
-          test -s app/libs/blackbox-core.aar
-          if [ -f app/libs/engine-dep-info.txt ]; then
-            { echo '### Engine build'; echo '```'; cat app/libs/engine-dep-info.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
-          fi
-
-      # The crash names ONE missing method. nm (inside build_engine.sh) only finds methods exported the
-      # Java_pkg_Class_method way; an engine that registers natives with RegisterNatives keeps its method
-      # names as plain strings instead, invisible to nm. This pulls every string out of each .so that looks
-      # like a JNI class path or method signature, so you can check whether the crash's method (or its
-      # class) shows up here at all for this engine build.
-      - name: List Java symbols referenced from the native libraries
-        run: |
-          mkdir -p /tmp/engine-so
-          for aar in app/libs/*.aar; do
-            [ -f "$aar" ] || continue
-            unzip -o -q "$aar" 'jni/*/*.so' -d /tmp/engine-so 2>/dev/null || true
-          done
-          {
-            echo '### Java symbols referenced from the native libraries (heuristic)'
-            echo 'Plain strings inside each .so that look like a JNI class path or method signature.'
-            find /tmp/engine-so -name '*.so' 2>/dev/null | sort | while read -r so; do
-              echo
-              echo "-- ${so#/tmp/engine-so/} --"
-              echo '```'
-              strings -a "$so" \
-                | grep -E '^\(.*\)[A-Za-z]|^[A-Za-z][A-Za-z0-9_]*(/[A-Za-z][A-Za-z0-9_]*)+$' \
-                | sort -u | head -n 300
-              echo '```'
-            done
-          } >> "$GITHUB_STEP_SUMMARY"
-
-      # Save the AAR even if the app build below fails, so it never has to be rebuilt from scratch.
-      - name: Save engine AAR cache
-        if: ${{ always() && steps.engine-cache.outputs.cache-hit != 'true' && hashFiles('app/libs/blackbox-core.aar') != '' }}
-        uses: actions/cache/save@v4
-        with:
-          path: |
-            app/libs/blackbox-core.aar
-            app/libs/engine-dep-*
-          key: engine-aar-${{ env.ENGINE_CACHE_VERSION }}-${{ inputs.engine_repo || 'default' }}-${{ inputs.engine_module || 'default' }}-${{ inputs.engine_ref || 'latest' }}-${{ hashFiles('scripts/*') }}
-
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.13"
 
+      - name: Run unit tests
+        run: gradle testDebugUnitTest --stacktrace
+
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
 
-      - name: Check the engine is inside the APK
-        run: |
-          apk="$(ls app/build/outputs/apk/debug/*.apk | head -n 1)"
-          if unzip -p "$apk" 'classes*.dex' | grep -aq 'top/niunaijun/blackbox/BlackBoxCore'; then
-            echo "Engine included: yes" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            echo "The engine classes are NOT in the APK" | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-          if unzip -p "$apk" 'classes*.dex' | grep -aq 'top/niunaijun/blackreflection/BlackReflection'; then
-            echo "Engine libraries (BlackReflection) included: yes" | tee -a "$GITHUB_STEP_SUMMARY"
-          else
-            echo "BlackReflection is NOT in the APK: the engine would fail to start" | tee -a "$GITHUB_STEP_SUMMARY"
-            exit 1
-          fi
-
-      # Trial runs (engine_repo and/or engine_module set) upload under a different artifact name so they
-      # can never be mistaken for, or overwrite, your normal debug build.
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ env.TRYING_OTHER_ENGINE == 'true' && 'Calculator-apk' || 'Calculator-debug-apk' }}
+          name: CalcVault-debug-apk
           path: app/build/outputs/apk/debug/*.apk
 
-      # Only for a real push to the default branch with the pinned engine: work out the next v2.x
-      # version from existing release tags (2.0 the first time this runs, then 2.1, 2.2, ...) and write
-      # it into app/build.gradle.kts before the release build below, so the APK and its GitHub release
-      # agree. A PR build or a trial-engine run is skipped here and keeps whatever version is committed.
+      # On pushes to the default branch, bump v2.x from existing GitHub releases and write the
+      # version into app/build.gradle.kts before building the release APK & Play Store AAB.
       - name: Compute next release version
         id: version
-        if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && env.TRYING_OTHER_ENGINE != 'true' }}
+        if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -196,14 +84,54 @@ jobs:
             minor="$(echo "$last" | cut -d. -f2)"
             next="2.$((minor + 1))"
           fi
-          code="$((1000 + GITHUB_RUN_NUMBER))"   # stays well above the versionCode already committed (8)
+          code="$((1000 + GITHUB_RUN_NUMBER))"
           echo "Next version: $next (versionCode $code)"
           echo "versionName=$next" >> "$GITHUB_OUTPUT"
           echo "versionCode=$code" >> "$GITHUB_OUTPUT"
           sed -i "s/versionCode = [0-9]\+/versionCode = ${code}/" app/build.gradle.kts
           sed -i "s/versionName = \"[^\"]*\"/versionName = \"${next}\"/" app/build.gradle.kts
 
-      # Same app, not debuggable. A debuggable app runs with CheckJNI, which aborts the whole process on JNI
+      # Optional Play Store release signing: add KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, and
+      # KEY_PASSWORD in GitHub repo Secrets when you're ready to upload to Google Play Console.
+      # Without them, app/build.gradle.kts cleanly falls back to debug signing for testing.
+      - name: Decode Play release keystore (if configured)
+        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          echo "$KEYSTORE_BASE64" | base64 --decode > /tmp/release.jks
+          echo "KEYSTORE_PATH=/tmp/release.jks" >> "$GITHUB_ENV"
+
+      - name: Build release APK & Play Store AAB
+        env:
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: |
+          gradle assembleRelease bundleRelease --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CalcVault-release-apk
+          path: app/build/outputs/apk/release/*.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: CalcVault-play-store-aab
+          path: app/build/outputs/bundle/release/*.aab
+
+      - name: Publish GitHub release
+        if: ${{ steps.version.outputs.versionName != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apk="$(ls app/build/outputs/apk/release/*.apk | head -n 1)"
+          aab="$(ls app/build/outputs/bundle/release/*.aab | head -n 1)"
+          gh release create "v${{ steps.version.outputs.versionName }}" \
+            "$apk" "$aab" \
+            --title "v${{ steps.version.outputs.versionName }}" \
+            --generate-notes
+s the whole process on JNI
       # problems a normal build survives, so use this one on a phone. Skipped on a trial run — the debug APK
       # above is enough to see whether a different engine starts at all, and skipping saves CI time.
       - name: Build release APK
