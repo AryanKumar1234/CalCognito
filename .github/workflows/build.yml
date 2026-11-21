@@ -1,7 +1,7 @@
 name: Build CalcVault (Play-Compliant APK & AAB)
 
 permissions:
-  contents: write   # needed to create git tags / GitHub releases below
+  contents: write
 
 on:
   push:
@@ -15,9 +15,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # If the repo holds the project as a committed zip at the root, unpack it over the checkout
-      # (flattening a single wrapping folder like "CalcVault/..."). Prefers CalcVault*.zip if more
-      # than one zip exists; once you commit unpacked files instead, this step is a no-op.
       - name: Extract committed project zip, if there is one
         run: |
           zip_file="$(find . -maxdepth 1 -iname '*CalcVault*.zip' | head -n 1)"
@@ -68,8 +65,6 @@ jobs:
           name: CalcVault-debug-apk
           path: app/build/outputs/apk/debug/*.apk
 
-      # On pushes to the default branch, bump v2.x from existing GitHub releases and write the
-      # version into app/build.gradle.kts before building the release APK & Play Store AAB.
       - name: Compute next release version
         id: version
         if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
@@ -91,16 +86,17 @@ jobs:
           sed -i "s/versionCode = [0-9]\+/versionCode = ${code}/" app/build.gradle.kts
           sed -i "s/versionName = \"[^\"]*\"/versionName = \"${next}\"/" app/build.gradle.kts
 
-      # Optional Play Store release signing: add KEYSTORE_BASE64, KEYSTORE_PASSWORD, KEY_ALIAS, and
-      # KEY_PASSWORD in GitHub repo Secrets when you're ready to upload to Google Play Console.
-      # Without them, app/build.gradle.kts cleanly falls back to debug signing for testing.
       - name: Decode Play release keystore (if configured)
-        if: ${{ secrets.KEYSTORE_BASE64 != '' }}
         env:
           KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
         run: |
-          echo "$KEYSTORE_BASE64" | base64 --decode > /tmp/release.jks
-          echo "KEYSTORE_PATH=/tmp/release.jks" >> "$GITHUB_ENV"
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 --decode > /tmp/release.jks
+            echo "KEYSTORE_PATH=/tmp/release.jks" >> "$GITHUB_ENV"
+            echo "Decoded Play release keystore."
+          else
+            echo "No KEYSTORE_BASE64 secret set; using debug signing fallback."
+          fi
 
       - name: Build release APK & Play Store AAB
         env:
@@ -131,36 +127,4 @@ jobs:
             "$apk" "$aab" \
             --title "v${{ steps.version.outputs.versionName }}" \
             --generate-notes
-s the whole process on JNI
-      # problems a normal build survives, so use this one on a phone. Skipped on a trial run — the debug APK
-      # above is enough to see whether a different engine starts at all, and skipping saves CI time.
-      - name: Build release APK
-        if: ${{ env.TRYING_OTHER_ENGINE != 'true' }}
-        run: gradle assembleRelease --stacktrace
-
-      - uses: actions/upload-artifact@v4
-        if: ${{ env.TRYING_OTHER_ENGINE != 'true' }}
-        with:
-          name: Calculator-release-apk
-          path: app/build/outputs/apk/release/*.apk
-
-      # Only runs when "Compute next release version" above actually ran (push to the default branch,
-      # pinned engine). Publishes v2.0, then v2.1, v2.2, ... each time, with the release APK attached.
-      - name: Publish GitHub release
-        if: ${{ steps.version.outputs.versionName != '' }}
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          apk="$(ls app/build/outputs/apk/release/*.apk | head -n 1)"
-          gh release create "v${{ steps.version.outputs.versionName }}" \
-            "$apk" \
-            --title "v${{ steps.version.outputs.versionName }}" \
-            --generate-notes
-
-      # Download this once and commit it to app/libs/ if you also want to build the engine build locally in
-      # Android Studio without running the native build yourself.
-      - uses: actions/upload-artifact@v4
-        with:
-          name: ${{ env.TRYING_OTHER_ENGINE == 'true' && 'blackbox-core-aar-trial' || 'blackbox-core-aar' }}
-          path: app/libs/blackbox-core.aar
-          
+            
