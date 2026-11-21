@@ -1,5 +1,8 @@
 name: Build APK (with hidden-app engine)
 
+permissions:
+  contents: write   # needed to create git tags / GitHub releases below
+
 on:
   push:
   pull_request:
@@ -31,8 +34,8 @@ env:
   ENGINE_REF: ${{ inputs.engine_ref }}
   ENGINE_MODULE: ${{ inputs.engine_module }}
   # true only on a manual run asking for a non-pinned engine or module. Keeps that run's output out of
-  # the artifact names your real builds use, and out of the cache slot your pinned build reads from —
-  # a trial run can never overwrite either.
+  # the artifact names your real builds use, out of the cache slot your pinned build reads from, and out
+  # of the auto-release below — a trial run can never overwrite any of the three.
   TRYING_OTHER_ENGINE: ${{ inputs.engine_repo != '' || inputs.engine_module != '' }}
 
 jobs:
@@ -41,6 +44,33 @@ jobs:
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+
+      # The repo currently holds the project as a committed zip instead of unpacked files. If one is
+      # found at the repo root, unpack it over the checkout (flattening a single wrapping folder, e.g.
+      # "CalculatorApp/...", so the rest of this workflow keeps using plain paths like scripts/..., app/...).
+      # Once you commit the real files instead of a zip, this step just says so and does nothing.
+      - name: Extract committed project zip, if there is one
+        run: |
+          zip_file="$(find . -maxdepth 1 -iname '*.zip' | head -n 1)"
+          if [ -z "$zip_file" ]; then
+            echo "No zip at the repo root; using the checked-out files as-is."
+            exit 0
+          fi
+          echo "Extracting $zip_file"
+          tmp="$(mktemp -d)"
+          unzip -q "$zip_file" -d "$tmp"
+          entries=("$tmp"/*)
+          if [ "${#entries[@]}" -eq 1 ] && [ -d "${entries[0]}" ]; then
+            src="${entries[0]}"   # the zip wraps everything in one folder; use its contents
+          else
+            src="$tmp"
+          fi
+          # Never let the zip's own copy of these overwrite the pipeline that is currently running, or
+          # git's own metadata.
+          rsync -a --exclude='.git' --exclude='.github' "$src"/ ./
+          rm -rf "$tmp"
+          echo "Repo root after extraction:"
+          ls -la
 
       # JDK 21: the engine's code is written for Java 21 (JDK 17 fails with "invalid source release: 21").
       - uses: actions/setup-java@v4
@@ -148,6 +178,31 @@ jobs:
           name: ${{ env.TRYING_OTHER_ENGINE == 'true' && 'Calculator-apk' || 'Calculator-debug-apk' }}
           path: app/build/outputs/apk/debug/*.apk
 
+      # Only for a real push to the default branch with the pinned engine: work out the next v2.x
+      # version from existing release tags (2.0 the first time this runs, then 2.1, 2.2, ...) and write
+      # it into app/build.gradle.kts before the release build below, so the APK and its GitHub release
+      # agree. A PR build or a trial-engine run is skipped here and keeps whatever version is committed.
+      - name: Compute next release version
+        id: version
+        if: ${{ github.event_name == 'push' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) && env.TRYING_OTHER_ENGINE != 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          last="$(gh release list --limit 200 --json tagName -q '.[].tagName' 2>/dev/null \
+            | grep -E '^v2\.[0-9]+$' | sed 's/^v//' | sort -t. -k2 -n | tail -n1 || true)"
+          if [ -z "$last" ]; then
+            next="2.0"
+          else
+            minor="$(echo "$last" | cut -d. -f2)"
+            next="2.$((minor + 1))"
+          fi
+          code="$((1000 + GITHUB_RUN_NUMBER))"   # stays well above the versionCode already committed (8)
+          echo "Next version: $next (versionCode $code)"
+          echo "versionName=$next" >> "$GITHUB_OUTPUT"
+          echo "versionCode=$code" >> "$GITHUB_OUTPUT"
+          sed -i "s/versionCode = [0-9]\+/versionCode = ${code}/" app/build.gradle.kts
+          sed -i "s/versionName = \"[^\"]*\"/versionName = \"${next}\"/" app/build.gradle.kts
+
       # Same app, not debuggable. A debuggable app runs with CheckJNI, which aborts the whole process on JNI
       # problems a normal build survives, so use this one on a phone. Skipped on a trial run — the debug APK
       # above is enough to see whether a different engine starts at all, and skipping saves CI time.
@@ -160,6 +215,19 @@ jobs:
         with:
           name: Calculator-release-apk
           path: app/build/outputs/apk/release/*.apk
+
+      # Only runs when "Compute next release version" above actually ran (push to the default branch,
+      # pinned engine). Publishes v2.0, then v2.1, v2.2, ... each time, with the release APK attached.
+      - name: Publish GitHub release
+        if: ${{ steps.version.outputs.versionName != '' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          apk="$(ls app/build/outputs/apk/release/*.apk | head -n 1)"
+          gh release create "v${{ steps.version.outputs.versionName }}" \
+            "$apk" \
+            --title "v${{ steps.version.outputs.versionName }}" \
+            --generate-notes
 
       # Download this once and commit it to app/libs/ if you also want to build the engine build locally in
       # Android Studio without running the native build yourself.
