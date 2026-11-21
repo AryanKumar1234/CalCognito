@@ -1,31 +1,69 @@
-name: Build and Release Android APK
+name: Build and publish APK (with hidden-app engine)
+
+# Put this at  .github/workflows/<same file name as your current workflow>.yml  in the REPO ROOT.
+# (GitHub only runs workflows from the repo root's .github/workflows; the copy inside CalculatorApp.zip never runs.)
+# Keeping the same file name keeps the run number going, so the release tags (v1.0.N) don't collide with old ones.
 
 on:
   push:
-    branches: [ main, master ]
-  pull_request:
   workflow_dispatch:
+    inputs:
+      rebuild_engine:
+        description: "Ignore the cached engine and rebuild it from source"
+        type: boolean
+        default: false
+      engine_ref:
+        description: "Engine commit / tag / branch to build (empty = latest)"
+        type: string
+        default: ""
 
 permissions:
-  contents: write   # needed to create a GitHub Release
+  contents: write   # needed to create the release
+
+env:
+  ENGINE_CACHE_VERSION: v4
+  ENGINE_REF: ${{ inputs.engine_ref }}
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    timeout-minutes: 120
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
+      # Finds the project: unzips the newest .zip in the repo root (the one you uploaded last), or uses a project that
+      # is already unpacked. Sets PROJECT_DIR to the folder that holds settings.gradle.kts.
       - name: Unzip source
         run: |
-          unzip -o CalculatorApp.zip -d extracted
-          mv extracted/CalculatorApp project
+          set -e
+          best=""; best_t=0
+          for z in *.zip; do
+            [ -f "$z" ] || continue
+            t="$(git log -1 --format=%ct -- "$z" 2>/dev/null || echo 0)"
+            if [ "${t:-0}" -ge "$best_t" ]; then best="$z"; best_t="${t:-0}"; fi
+          done
+          if [ -n "$best" ]; then
+            echo "Unzipping $best"
+            rm -rf _src && mkdir _src
+            unzip -q -o "$best" -d _src
+            root="_src"
+          else
+            root="."
+          fi
+          settings="$(find "$root" -maxdepth 4 -name settings.gradle.kts -not -path '*/.git/*' | awk '{print length, $0}' | sort -n | head -n 1 | cut -d' ' -f2-)"
+          if [ -z "$settings" ]; then echo "No settings.gradle.kts found"; exit 1; fi
+          dir="$(cd "$(dirname "$settings")" && pwd)"
+          echo "Project folder: $dir"
+          echo "PROJECT_DIR=$dir" >> "$GITHUB_ENV"
+          test -f "$dir/scripts/build_engine.sh" || { echo "scripts/build_engine.sh is missing from the project"; exit 1; }
 
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      # JDK 21: the engine is written for Java 21 (17 fails with "invalid source release: 21"). The app still targets 17.
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: 17
+          java-version: 21
 
       - name: Install required Android SDK packages
         run: |
@@ -33,31 +71,79 @@ jobs:
           "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
             "platform-tools" "platforms;android-36" "build-tools;36.0.0"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - name: Restore engine cache
+        id: engine-cache
+        if: ${{ !inputs.rebuild_engine }}
+        uses: actions/cache@v4
         with:
-          gradle-version: 8.13
+          path: |
+            ${{ env.PROJECT_DIR }}/app/libs/blackbox-core.aar
+            ${{ env.PROJECT_DIR }}/app/libs/engine-dep-*
+          key: engine-aar-${{ env.ENGINE_CACHE_VERSION }}-${{ inputs.engine_ref || 'latest' }}-${{ hashFiles('**/scripts/build_engine.sh', '**/scripts/export-engine-deps.init.gradle') }}
 
-      - name: Build debug APK
-        working-directory: project
-        run: gradle assembleDebug --stacktrace
+      - name: Build the BlackBox engine AAR
+        if: ${{ steps.engine-cache.outputs.cache-hit != 'true' }}
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          chmod +x scripts/build_engine.sh
+          ./scripts/build_engine.sh
 
-      - name: Rename APK
-        run: cp project/app/build/outputs/apk/debug/app-debug.apk Calculator.apk
+      - name: Check the engine AAR is in place
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          ls -l app/libs
+          test -s app/libs/blackbox-core.aar
+          if [ -f app/libs/engine-dep-info.txt ]; then
+            { echo '### Engine build'; echo '```'; cat app/libs/engine-dep-info.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
-      - name: Upload APK as workflow artifact
-        uses: actions/upload-artifact@v4
+      # Save the engine even if the app build below fails, so it never has to be rebuilt from scratch.
+      - name: Save engine cache
+        if: ${{ always() && steps.engine-cache.outputs.cache-hit != 'true' && hashFiles(format('{0}/app/libs/blackbox-core.aar', env.PROJECT_DIR)) != '' }}
+        uses: actions/cache/save@v4
         with:
-          name: calculator-debug-apk
+          path: |
+            ${{ env.PROJECT_DIR }}/app/libs/blackbox-core.aar
+            ${{ env.PROJECT_DIR }}/app/libs/engine-dep-*
+          key: engine-aar-${{ env.ENGINE_CACHE_VERSION }}-${{ inputs.engine_ref || 'latest' }}-${{ hashFiles('**/scripts/build_engine.sh', '**/scripts/export-engine-deps.init.gradle') }}
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      # Release build: not debuggable, so Android does not run it with CheckJNI. Signed with the committed key.
+      - name: Build release APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: gradle assembleRelease --stacktrace
+
+      - name: Check the engine is inside the APK
+        working-directory: ${{ env.PROJECT_DIR }}
+        run: |
+          apk="$(ls app/build/outputs/apk/release/*.apk | head -n 1)"
+          echo "APK: $apk"
+          unzip -p "$apk" 'classes*.dex' | grep -aq 'top/niunaijun/blackbox/BlackBoxCore' \
+            || { echo "The engine classes are NOT in the APK"; exit 1; }
+          unzip -p "$apk" 'classes*.dex' | grep -aq 'top/niunaijun/blackreflection/BlackReflection' \
+            || { echo "BlackReflection is NOT in the APK"; exit 1; }
+          echo "Engine included: yes" | tee -a "$GITHUB_STEP_SUMMARY"
+          cp "$apk" "$GITHUB_WORKSPACE/Calculator.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Calculator-apk
           path: Calculator.apk
-          if-no-files-found: error
 
       - name: Publish GitHub Release
-        if: github.event_name != 'pull_request'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "v1.0.${{ github.run_number }}" Calculator.apk \
-            --target "${{ github.sha }}" \
-            --title "Calculator v1.0.${{ github.run_number }}" \
-            --notes "Debug APK built automatically from commit ${{ github.sha }}."
+          set -e
+          tag="v1.0.${{ github.run_number }}"
+          if gh release view "$tag" >/dev/null 2>&1; then tag="${tag}-${{ github.run_attempt }}"; fi
+          short="${GITHUB_SHA::7}"
+          gh release create "$tag" Calculator.apk \
+            --target "$GITHUB_SHA" \
+            --title "Calculator $tag" \
+            --notes "Release APK (hidden-app engine included, not debuggable) built automatically from commit $short." \
+            --latest
+            
