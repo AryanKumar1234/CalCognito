@@ -69,7 +69,23 @@ jobs:
           unzip -l app/libs/mpvlib.aar | grep -E 'jni/[^/]+/libplayer\.so' > /dev/null || { echo "mpvlib.aar has no jni/<abi>/libplayer.so"; exit 1; }
 
       - name: Build debug APK
-        run: gradle assembleDebug --stacktrace
+        run: gradle assembleDebug --stacktrace 2>&1 | tee /tmp/gradle-debug.log
+
+      # Publishes the Gradle output as the "build-log" release when something fails, so the error is readable without
+      # downloading Actions logs.
+      - name: Publish the build log on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            echo 'Gradle output (last 400 lines):'
+            echo '```'
+            tail -n 400 /tmp/gradle-debug.log 2>/dev/null || echo '(no log captured)'
+            echo '```'
+          } > /tmp/build-notes.md
+          gh release delete build-log --yes --cleanup-tag > /dev/null 2>&1 || true
+          gh release create build-log --title "CI build log" --notes-file /tmp/build-notes.md --latest=false || true
 
       # Fails the run if the engine did not end up in the APK, so a build without it can never be published by accident.
       - name: Check the engine is inside the APK
