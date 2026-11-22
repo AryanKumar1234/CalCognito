@@ -114,8 +114,12 @@ jobs:
           tag_name: v2.1
           name: CalCognito v2.1
           body: |
-            CalCognito 2.1
+            CalCognito 2.1 - mpv build
 
+            - The small ExoPlayer build of the same app is published separately as "CalCognito 2.0 - ExoPlayer (small)"
+              (tag `v2.0-exo`, about 9 MB, built from `CalculatorApp-v20.zip`).
+            - This build bundles libmpv (through `app/libs/mpvlib.aar`, now committed in the zip) for the vault player's
+              wider format support, which is what makes the APK large.
             - CI builds the committed `CalculatorApp.zip` again (the workflow unpacks it before running Gradle).
             - Google Play services in the hidden space: cloning an app now offers to set Play services up for every app
               that actually uses it, not only for apps whose manifest carries the GMS marker. Google's own apps (the

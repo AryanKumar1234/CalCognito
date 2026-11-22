@@ -1,0 +1,152 @@
+name: Build v2.0 APK (ExoPlayer, small)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      rebuild_engine:
+        description: "Ignore the cached engine AAR and rebuild it from source"
+        type: boolean
+        default: false
+      engine_ref:
+        description: "Engine commit / tag / branch to build (empty = latest). Pin one once you have a build that works."
+        type: string
+        default: ""
+
+# Lets the release step below create the tag and the GitHub release with the workflow's own token.
+permissions:
+  contents: write
+
+env:
+  # Bump this (v4 -> v5) to force a fresh engine build; the AAR is cached between runs because the native build is slow.
+  ENGINE_CACHE_VERSION: v4
+  # Pin the engine here (or via the manual-run input) so two builds of the same app contain the same engine.
+  ENGINE_REF: ${{ inputs.engine_ref }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      # The v2.0 project (the ExoPlayer build) is committed as CalculatorApp-v20.zip at the repo root. Unpack it here;
+      # its own .github folder is skipped so this workflow stays in charge.
+      - name: Extract committed v2.0 project
+        run: |
+          rm -rf /tmp/v20src && mkdir -p /tmp/v20src
+          unzip -q CalculatorApp-v20.zip -d /tmp/v20src
+          rsync -a --exclude '.github' --exclude 'local.properties' /tmp/v20src/CalculatorApp/ ./
+          ls -la
+
+      # JDK 21: the engine's code is written for Java 21 (JDK 17 fails with "invalid source release: 21").
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      # The runner already has the Android SDK. Accepting the licences lets Gradle download whatever else the engine and
+      # the app ask for (NDK, CMake, platforms).
+      - name: Install required Android SDK packages
+        run: |
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
+          "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" \
+            "platform-tools" "platforms;android-36" "build-tools;36.0.0"
+
+      # The hidden-app engine is not committed as source in v2.0: its AAR is built from ALEX5402/NewBlackbox and cached,
+      # because that native build takes a long time.
+      - name: Restore engine AAR cache
+        id: engine-cache
+        if: ${{ !inputs.rebuild_engine }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            app/libs/blackbox-core.aar
+            app/libs/engine-dep-*
+          key: engine-aar-${{ env.ENGINE_CACHE_VERSION }}-${{ inputs.engine_ref || 'latest' }}-${{ hashFiles('scripts/*') }}
+
+      - name: Build the BlackBox engine AAR
+        if: ${{ steps.engine-cache.outputs.cache-hit != 'true' }}
+        run: |
+          chmod +x scripts/build_engine.sh
+          ./scripts/build_engine.sh
+
+      - name: Check the engine AAR is in place
+        run: |
+          ls -l app/libs
+          test -s app/libs/blackbox-core.aar
+          if [ -f app/libs/engine-dep-info.txt ]; then
+            { echo '### Engine build'; echo '```'; cat app/libs/engine-dep-info.txt; echo '```'; } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      # Save the AAR even if the app build below fails, so it never has to be rebuilt from scratch.
+      - name: Save engine AAR cache
+        if: ${{ always() && steps.engine-cache.outputs.cache-hit != 'true' && hashFiles('app/libs/blackbox-core.aar') != '' }}
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            app/libs/blackbox-core.aar
+            app/libs/engine-dep-*
+          key: engine-aar-${{ env.ENGINE_CACHE_VERSION }}-${{ inputs.engine_ref || 'latest' }}-${{ hashFiles('scripts/*') }}
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: "8.13"
+
+      - name: Build debug APK
+        run: gradle assembleDebug --stacktrace
+
+      # Fails the run if the engine did not end up in the APK, so a build without it can never be published by accident.
+      - name: Check the engine is inside the APK
+        run: |
+          apk="$(ls app/build/outputs/apk/debug/*.apk | head -n 1)"
+          if unzip -p "$apk" 'classes*.dex' | grep -aq 'top/niunaijun/blackbox/BlackBoxCore'; then
+            echo "Engine classes included: yes" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "The engine classes are NOT in the APK" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+          if unzip -p "$apk" 'classes*.dex' | grep -aq 'top/niunaijun/blackreflection/BlackReflection'; then
+            echo "Engine libraries (BlackReflection) included: yes" | tee -a "$GITHUB_STEP_SUMMARY"
+          else
+            echo "BlackReflection is NOT in the APK: the engine would fail to start" | tee -a "$GITHUB_STEP_SUMMARY"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Calculator-v20-debug-apk
+          path: app/build/outputs/apk/debug/*.apk
+
+      # Same app, not debuggable. Signed with the same committed key as the other builds.
+      - name: Build release APK
+        run: gradle assembleRelease --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Calculator-v20-release-apk
+          path: app/build/outputs/apk/release/*.apk
+
+      # Publishes the small build as the "CalCognito 2.0 - ExoPlayer" release, next to the mpv build (v2.1).
+      - name: Publish CalCognito 2.0 ExoPlayer release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v2.0-exo
+          name: CalCognito 2.0 - ExoPlayer (small)
+          body: |
+            CalCognito 2.0, ExoPlayer build.
+
+            - Player: Android Media3 ExoPlayer. Fit / fill / zoom, playback speed, subtitles (including sidecar
+              `.srt` / `.vtt` / `.ass` next to the video), audio and subtitle track pickers, rotate, brightness,
+              volume boost, screen lock, loop.
+            - Built from `CalculatorApp-v20.zip` (the v2.0 source). The APK is about 9 MB because the player is an
+              ordinary Gradle dependency instead of bundled native libraries.
+            - Same calculator, history, hidden vault and hidden-app engine as before.
+            - The mpv build (broader format support, much larger APK) is published separately as
+              CalCognito 2.1.
+          files: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
+          fail_on_unmatched_files: true
