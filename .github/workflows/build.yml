@@ -43,8 +43,10 @@ jobs:
         with:
           gradle-version: "8.13"
 
-      # The vault's video player compiles against app/libs/mpvlib.aar (is.xyz.mpv), which is not committed. Without it
-      # the Kotlin compile fails on the MPVLib imports, so fetch the AAR before Gradle runs.
+      # The vault's video player compiles against app/libs/mpvlib.aar (is.xyz.mpv), which is committed inside
+      # CalculatorApp.zip. If it is ever missing, fetch the AAR that actually works (jni/<abi>/libmpv.so + libplayer.so).
+      # Never use SunnyVishnu3's 2026-6-1 release: it only has assets/native-v9a and no libplayer.so, so the player dies
+      # with UnsatisfiedLinkError at runtime.
       - name: Get libmpv (mpvlib.aar)
         env:
           GH_TOKEN: ${{ github.token }}
@@ -54,15 +56,17 @@ jobs:
             echo "Using the committed app/libs/mpvlib.aar"
           else
             rm -rf /tmp/mpvdl && mkdir -p /tmp/mpvdl
-            gh release download --repo SunnyVishnu3/mpvlibAndroid --pattern '*.aar' --dir /tmp/mpvdl
+            gh release download 2026-07-18 --repo Riteshp2001/mpvlibAndroid --pattern '*.aar' --dir /tmp/mpvdl
             ls -l /tmp/mpvdl
-            pick="$(ls /tmp/mpvdl/*.aar | grep -i 'arm64' | head -n 1 || true)"
+            pick="$(ls /tmp/mpvdl/*.aar | grep -i 'mpv-android-lib' | head -n 1 || true)"
             if [ -z "$pick" ]; then pick="$(ls /tmp/mpvdl/*.aar | head -n 1)"; fi
             if [ -z "$pick" ]; then echo "No .aar found in the mpvlibAndroid release"; exit 1; fi
             cp "$pick" app/libs/mpvlib.aar
             echo "Using $(basename "$pick") as mpvlib.aar" | tee -a "$GITHUB_STEP_SUMMARY"
           fi
-          unzip -l app/libs/mpvlib.aar | grep -E 'libmpv.so|libplayer.so' || { echo "mpvlib.aar has no libmpv.so / libplayer.so"; exit 1; }
+          # libmpv AND libplayer.so must be packaged as loadable jni libraries, otherwise System.loadLibrary fails.
+          unzip -l app/libs/mpvlib.aar | grep -E 'jni/[^/]+/libmpv\.so' > /dev/null || { echo "mpvlib.aar has no jni/<abi>/libmpv.so"; exit 1; }
+          unzip -l app/libs/mpvlib.aar | grep -E 'jni/[^/]+/libplayer\.so' > /dev/null || { echo "mpvlib.aar has no jni/<abi>/libplayer.so"; exit 1; }
 
       - name: Build debug APK
         run: gradle assembleDebug --stacktrace
