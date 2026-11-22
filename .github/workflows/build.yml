@@ -84,18 +84,28 @@ jobs:
           name: Calculator-release-apk
           path: app/build/outputs/apk/release/*.apk
 
-      # Publishes both APKs as the "CalCognito v2.0" GitHub release. Runs for pushes and manual runs (not pull
+      # Publishes both APKs as the "CalCognito v2.1" GitHub release. Runs for pushes and manual runs (not pull
       # requests), so the release always matches the commit that was just built.
-      - name: Publish CalCognito v2.0 release
+      - name: Publish CalCognito v2.1 release
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.0
-          name: CalCognito v2.0
+          tag_name: v2.1
+          name: CalCognito v2.1
           body: |
-            CalCognito 2.0
+            CalCognito 2.1
 
             - CI builds the committed `CalculatorApp.zip` again (the workflow unpacks it before running Gradle).
+            - Google Play services in the hidden space: cloning an app now offers to set Play services up for every app
+              that actually uses it, not only for apps whose manifest carries the GMS marker. Google's own apps (the
+              Google app, Maps, YouTube) never had that marker, so they were cloned into the space without Play
+              services and then showed "Google Play services isn't supported on this device". The app's code is now
+              searched for Play services classes (cached per app version) and the question is answered off the UI thread.
+            - Apps cloned before this update: open the Apps folder, tap the Google Play services row, Set up, then
+              close and reopen the clone.
+
+            2.0 changes, still included:
+
             - Removed the hidden-app engine's inherited permissions: SMS/MMS, contacts, call logs, calendar, location,
               camera, microphone, sensors, accounts and the system-only permissions a normal app can never hold. Only
               the permissions the calculator and the file vault actually use remain.
