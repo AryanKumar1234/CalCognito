@@ -5,12 +5,24 @@ on:
   pull_request:
   workflow_dispatch:
 
+# Lets the release step below create the tag and the GitHub release with the workflow's own token.
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 90
     steps:
       - uses: actions/checkout@v4
+
+      # The project itself is committed as CalculatorApp.zip at the repo root (the checkout has no Gradle build), so
+      # unpack it into the workspace before anything tries to run Gradle.
+      - name: Extract committed project
+        run: |
+          unzip -q CalculatorApp.zip
+          rsync -a --exclude '.github' --exclude 'local.properties' CalculatorApp/ ./
+          ls -la
 
       # JDK 21: the engine (Bcore) is written for Java 21; the app itself still compiles for Java 17.
       - uses: actions/setup-java@v4
@@ -71,4 +83,24 @@ jobs:
         with:
           name: Calculator-release-apk
           path: app/build/outputs/apk/release/*.apk
+
+      # Publishes both APKs as the "CalCognito v2.0" GitHub release. Runs for pushes and manual runs (not pull
+      # requests), so the release always matches the commit that was just built.
+      - name: Publish CalCognito v2.0 release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v2.0
+          name: CalCognito v2.0
+          body: |
+            CalCognito 2.0
+
+            - CI builds the committed `CalculatorApp.zip` again (the workflow unpacks it before running Gradle).
+            - Removed the hidden-app engine's inherited permissions: SMS/MMS, contacts, call logs, calendar, location,
+              camera, microphone, sensors, accounts and the system-only permissions a normal app can never hold. Only
+              the permissions the calculator and the file vault actually use remain.
+          files: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/release/*.apk
+          fail_on_unmatched_files: true
           
