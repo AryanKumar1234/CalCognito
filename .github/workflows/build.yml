@@ -121,6 +121,12 @@ jobs:
           body: |
             CalCognito 2.1 - mpv build
 
+            - The vault's video player now looks and works like Nosved Player: glass chrome with title, resolution/codec
+              info and an HDR badge, separate landscape and portrait layouts that re-apply on rotation, Nosved's gapped
+              seek bar (grows while you drag, tap the total time for time remaining), a volume panel on the left half of
+              the screen and a brightness panel on the right, a centre play/pause flash on double-tap, aspect cycling
+              with its own Fit/Stretch/Crop/100% icons, an Enhance button, chapters that only appear when the file has
+              them, plus subtitle/audio track pickers, speed, loop, mute, frame step and stream info in the menu.
             - The small ExoPlayer build of the same app is published separately as "CalCognito 2.0 - ExoPlayer (small)"
               (tag `v2.0-exo`, about 9 MB, built from `CalculatorApp-v20.zip`).
             - This build bundles libmpv (through `app/libs/mpvlib.aar`, now committed in the zip) for the vault player's
