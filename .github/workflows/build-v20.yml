@@ -135,6 +135,8 @@ jobs:
         with:
           tag_name: v2.0-exo
           name: CalCognito 2.0 - ExoPlayer (small)
+          # The mpv build (v2.1) is the main release; this smaller variant must never take the "Latest" badge.
+          make_latest: false
           body: |
             CalCognito 2.0, ExoPlayer build.
 

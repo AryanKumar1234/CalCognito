@@ -118,6 +118,9 @@ jobs:
         with:
           tag_name: v2.1
           name: CalCognito v2.1
+          # This is the main build, so it always owns the "Latest" badge. Without this the exo workflow (which runs on
+          # the same push) could win the badge by creating its release a few seconds later.
+          make_latest: true
           body: |
             CalCognito 2.1 - mpv build
 
