@@ -110,38 +110,49 @@ jobs:
           name: Calculator-release-apk
           path: app/build/outputs/apk/release/*.apk
 
-      # Publishes both APKs as the "CalCognito v2.1" GitHub release. Runs for pushes and manual runs (not pull
+      # Publishes both APKs as the "CalCognito v3.0" GitHub release. Runs for pushes and manual runs (not pull
       # requests), so the release always matches the commit that was just built.
-      - name: Publish CalCognito v2.1 release
+      - name: Publish CalCognito v3.0 release
         if: github.event_name != 'pull_request'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v2.1
-          name: CalCognito v2.1
+          tag_name: v3.0
+          name: CalCognito v3.0
           # This is the main build, so it always owns the "Latest" badge. Without this the exo workflow (which runs on
           # the same push) could win the badge by creating its release a few seconds later.
           make_latest: true
           body: |
-            CalCognito 2.1 - mpv build
+            CalCognito 3.0 - mpv build
 
-            - The vault's video player now looks and works like Nosved Player: glass chrome with title, resolution/codec
-              info and an HDR badge, separate landscape and portrait layouts that re-apply on rotation, Nosved's gapped
-              seek bar (grows while you drag, tap the total time for time remaining), a volume panel on the left half of
-              the screen and a brightness panel on the right, a centre play/pause flash on double-tap, aspect cycling
-              with its own Fit/Stretch/Crop/100% icons, an Enhance button, chapters that only appear when the file has
-              them, plus subtitle/audio track pickers, speed, loop, mute, frame step and stream info in the menu.
-            - The small ExoPlayer build of the same app is published separately as "CalCognito 2.0 - ExoPlayer (small)"
-              (tag `v2.0-exo`, about 9 MB, built from `CalculatorApp-v20.zip`).
-            - This build bundles libmpv (through `app/libs/mpvlib.aar`, now committed in the zip) for the vault player's
-              wider format support, which is what makes the APK large.
+            - The player's overflow button now opens the full tabbed settings sheet, ported from Nosved Player:
+              Speed (with an editable value and presets), Gestures, Layout, Appearance, Automation and Info. The
+              speed, double-tap action and seek length, press-and-hold speed, seek / previous / next buttons,
+              backdrop gradients, remaining time and keep-screen-awake settings are read by the player and applied
+              as you change them. The long press still opens the old quick menu.
+            - Subtitles, Audio, Chapters and Enhance open their own side sheets, matching the recording: subtitle
+              tracks plus Size, Font, Background, Bold, ASS override, Delay and Vertical position; audio streams,
+              disable audio, a 2x volume booster and delay; the chapter list with the current chapter marked; and
+              five picture sliders (brightness, contrast, saturation, gamma, hue) with Reset.
+            - New player theme with Material 3 colour roles. On Android 12+ it follows the wallpaper's dynamic
+              colours (the same mapping Compose's dynamicDarkColorScheme uses) and falls back to Nosved's blue dark
+              palette elsewhere or when "Dynamic colors" is switched off in the menu.
+            - The decoder pill opens the ported Decoder side sheet (Hardware / Hardware+ / Software, with an ACTIVE
+              chip) instead of the old dialog.
+            - Vault: the "+" menu gained a Text option that asks for a title, creates a .txt note in the current
+              folder (encrypted when "encrypt by default" is on) and opens the text editor. Inside the Apps folder
+              the "+" button is gone, its three-dot and long-press menus are removed, and files can no longer be
+              moved into it, since hidden apps are added with the folder's own "Hide app" tile.
+            - Still from 2.1: glass chrome with title, resolution/codec info and an HDR badge, separate landscape and
+              portrait layouts that re-apply on rotation, the gapped Nosved seek bar, volume and brightness panels,
+              the centre play/pause flash, aspect cycling with its own icons, the Enhance button and chapters that
+              only appear when the file has them.
+            - The small ExoPlayer build of the same app is published separately as "CalCognito 2.0 - ExoPlayer
+              (small)" (tag `v2.0-exo`, about 9 MB, built from `CalculatorApp-v20.zip`).
+            - This build bundles libmpv (through `app/libs/mpvlib.aar`, now committed in the zip) for the vault
+              player's wider format support, which is what makes the APK large.
             - CI builds the committed `CalculatorApp.zip` again (the workflow unpacks it before running Gradle).
-            - Google Play services in the hidden space: cloning an app now offers to set Play services up for every app
-              that actually uses it, not only for apps whose manifest carries the GMS marker. Google's own apps (the
-              Google app, Maps, YouTube) never had that marker, so they were cloned into the space without Play
-              services and then showed "Google Play services isn't supported on this device". The app's code is now
-              searched for Play services classes (cached per app version) and the question is answered off the UI thread.
-            - Apps cloned before this update: open the Apps folder, tap the Google Play services row, Set up, then
-              close and reopen the clone.
+            - Google Play services in the hidden space: cloning an app now offers to set Play services up for every
+              app that actually uses it, not only for apps whose manifest carries the GMS marker.
 
             2.0 changes, still included:
 

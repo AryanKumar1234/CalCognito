@@ -147,7 +147,7 @@ jobs:
               ordinary Gradle dependency instead of bundled native libraries.
             - Same calculator, history, hidden vault and hidden-app engine as before.
             - The mpv build (broader format support, much larger APK) is published separately as
-              CalCognito 2.1.
+              CalCognito 3.0.
           files: |
             app/build/outputs/apk/debug/*.apk
             app/build/outputs/apk/release/*.apk
