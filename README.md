@@ -41,4 +41,4 @@ Source code:
 - `sourcecode.zip` — the whole project as readable files (Kotlin sources, resources, Gradle files, the CI workflow). It contains everything except the 71 MB `app/libs/mpvlib.aar` binary, which GitHub cannot show anyway.
 - `CalculatorApp.zip` — the exact tree CI unpacks and builds, including `app/libs/mpvlib.aar`. The Gradle build has no checkout of its own, so CI unzips this file and runs Gradle on the result; this zip is the source of truth for the build.
 - `CalculatorApp-v20.zip` — the same app on ExoPlayer (the small 2.0 build).
-- `app/libs/README.md` — which libmpv AAR is vendored (and which release must not be used). See also `README_CHANGES.md` for the notes that came with the Nosved-style player work.
+- `app/libs/README.md` — which libmpv AAR is vendored (and which release must not be used).
