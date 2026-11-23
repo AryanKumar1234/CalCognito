@@ -1,0 +1,28 @@
+name: Delete old build-log releases
+
+# One-off cleanup, removed again once it has run.
+on:
+  push:
+    paths:
+      - '.github/workflows/cleanup-build-logs.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  delete:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Delete the failed-build log releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for tag in build-log-221 build-log-224 build-log-225; do
+            if gh release view "$tag" --repo "$GITHUB_REPOSITORY" > /dev/null 2>&1; then
+              gh release delete "$tag" --repo "$GITHUB_REPOSITORY" --yes --cleanup-tag
+              echo "deleted $tag"
+            else
+              echo "$tag not present"
+            fi
+          done
