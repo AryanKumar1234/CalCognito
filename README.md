@@ -45,12 +45,12 @@ The vault's video player is drawn to match Nosved Player and runs on libmpv (`ap
 
 The `+` button offers **Folder**, **Hide app**, **Text** and **Upload**. **Text** asks for a title, creates a `.txt` note in the current folder (encrypted when "encrypt by default" is on) and opens the text editor.
 
-Inside the **Apps** folder the `+` button is hidden, its three-dot and long-press menus are removed, and files cannot be moved into it: hidden apps are added with the folder's own **Hide app** tile.
+Inside the **Apps** folder the `+` button is hidden, its three-dot and long-press menus are removed, and files cannot be moved into it: hidden apps are added with the folder's own **Hide app** tile. The same folder has an **Engine settings** row with the hidden-app engine's (BlackBox) own switches: Hide root, Gaming mode, Allow screenshots, Use VPN network and Background service; a change applies the next time a hidden app starts.
 
 ## Downloads and source
 
-- **mpv build (3.0)** — published as `CalCognito v3.0` (tag `v3.0`), APK asset `app-release.apk`:
-  <https://github.com/AryanKumar1234/CalCognito/releases/tag/v3.0>
+- **mpv build (3.1)** — published as `CalCognito v3.1` (tag `v3.1`), APK asset `app-release.apk`:
+  <https://github.com/AryanKumar1234/CalCognito/releases/tag/v3.1>
 - **ExoPlayer build (2.0, small)** — published as `CalCognito 2.0 - ExoPlayer (small)` (tag `v2.0-exo`), built from `CalculatorApp-v20.zip`.
 
 Source code:
